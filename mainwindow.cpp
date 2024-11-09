@@ -38,7 +38,7 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(centralWidget);  // Назначаем центральный виджет с нашим макетом
 
     // Подключаем обработчики событий кнопок
-    connect(ui->loadButton, &QPushButton::clicked, this, &MainWindow::loadGameFromJson);
+    connect(ui->loadButton, &QPushButton::clicked, this, &MainWindow::loadGameFromTxt);
     connect(ui->resetButton, &QPushButton::clicked, this, &MainWindow::resetGame);
 }
 
@@ -112,7 +112,7 @@ void MainWindow::saveGameToTextFile(const QJsonObject &move) {
 
 
 // Загрузка состояния из JSON
-void MainWindow::loadGameFromJson() {
+void MainWindow::loadGameFromTxt() {
     QFile file("gameState.txt");
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         qWarning() << "Не удалось открыть файл для чтения!";
@@ -158,6 +158,7 @@ void MainWindow::loadGameFromJson() {
 
     file.close();
 }
+
 // Проверка контрольной суммы
 void MainWindow::validateChecksum(const QJsonObject &move, int moveIndex) {
     int x = move["x"].toInt();
@@ -187,7 +188,10 @@ void MainWindow::resetGame() {
     }
 
     // Перезаписываем состояние в файл (пустое состояние после сброса)
-    saveGameToTextFile(QJsonObject());
+    QFile file("gameState.txt");
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file.close();
+    }
 
     moveCounter = 0;  // Сброс счетчика ходов
 }
