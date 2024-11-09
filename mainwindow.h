@@ -27,7 +27,7 @@ public:
 
 private slots:
     void handleCheckboxClick(int state);
-    void loadGameFromJson();
+    void loadGameFromTxt();
     void resetGame();
 
 private:
