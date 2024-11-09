@@ -30,12 +30,16 @@ private slots:
     void loadGameFromTxt();
     void resetGame();
 
+
 private:
     Ui::MainWindow *ui;
     int moveCounter;
+    QString lastMoveHash;
     void saveGameToTextFile(const QJsonObject &move);
-    QString generateChecksum(int x, int y, const QString &color, const QString &timestamp);
-
+    QString generateChecksum(int x, int y, const QString &color, const QString &timestamp, const QString &previousHash);
+    QString lastMoveChecksum;
+    QByteArray key = QByteArray::fromHex(QCryptographicHash::hash("1234", QCryptographicHash::Sha1));  // Объявляем ключ шифрования как член класса
+    QByteArray iv = QByteArray::fromHex("01230123012301230123012301230123");
     void validateChecksum(const QJsonObject &move, int moveIndex);
 };
 
