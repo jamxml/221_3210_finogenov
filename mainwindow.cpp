@@ -1,14 +1,26 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include <openssl/sha.h>
+#include "crypto_utils.h"
+#include <QFile>
+#include <QTextStream>
+#include <QMessageBox>
+#include <QCheckBox>
+#include <QVBoxLayout>
+#include <QDateTime>
+#include <QCryptographicHash>
+#include <QJsonObject>
+#include <QByteArray>
+#include <QDataStream>
+
+const QByteArray encryptionKey = QByteArray::fromHex("e2fb671f40239a6d2c9ca93ad14734f266a249554e84230b8d99d06798e4bcc0");
+const QByteArray iv = QByteArray::fromHex("6A6F686F726E67646F6E6F70786A6764");
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow), moveCounter(0) {
     ui->setupUi(this);
-
-    // Если в ui нет макета для основного окна, создаем новый
-    QVBoxLayout *mainLayout = new QVBoxLayout();  // Создаем вертикальный макет для основного окна
-
-    // Настройка 4x4 поля чекбоксов
+    
+    // Создание макета с чекбоксами
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
             QCheckBox *checkBox = new QCheckBox(this);
@@ -18,26 +30,23 @@ MainWindow::MainWindow(QWidget *parent)
             connect(checkBox, &QCheckBox::stateChanged, this, &MainWindow::handleCheckboxClick);
         }
     }
-
-    // Создаем вертикальный макет для кнопок и размещаем их внизу
+    
+    // Макет для кнопок
     QVBoxLayout *buttonLayout = new QVBoxLayout();
     buttonLayout->addWidget(ui->loadButton);
     buttonLayout->addWidget(ui->resetButton);
-
-    // Создаем отдельный виджет для кнопок и добавляем в макет
     QWidget *buttonWidget = new QWidget(this);
     buttonWidget->setLayout(buttonLayout);
-
-    // Добавляем этот виджет в основной макет
+    
+    // Добавление кнопок в главный макет
+    QVBoxLayout *mainLayout = new QVBoxLayout();
     mainLayout->addWidget(ui->gamePage);
     mainLayout->addWidget(buttonWidget);
-
-    // Устанавливаем основной макет для главного окна
+    
     QWidget *centralWidget = new QWidget(this);
     centralWidget->setLayout(mainLayout);
-    setCentralWidget(centralWidget);  // Назначаем центральный виджет с нашим макетом
-
-    // Подключаем обработчики событий кнопок
+    setCentralWidget(centralWidget);
+    
     connect(ui->loadButton, &QPushButton::clicked, this, &MainWindow::loadGameFromTxt);
     connect(ui->resetButton, &QPushButton::clicked, this, &MainWindow::resetGame);
 }
@@ -46,134 +55,129 @@ MainWindow::~MainWindow() {
     delete ui;
 }
 
-// Обработка нажатия на чекбокс
 void MainWindow::handleCheckboxClick(int state) {
     if (state != Qt::Checked) return;
-
+    
     QCheckBox *checkBox = qobject_cast<QCheckBox*>(sender());
     if (!checkBox) return;
-
+    
+    // Меняем цвет чекбокса в зависимости от хода
     QString color = (moveCounter % 2 == 0) ? "green" : "red";
     checkBox->setStyleSheet(QString("background-color: %1;").arg(color));
     checkBox->setEnabled(false);
     moveCounter++;
-
+    
     int x = checkBox->objectName().split('_')[1].toInt();
     int y = checkBox->objectName().split('_')[2].toInt();
     QString timestamp = QDateTime::currentDateTime().toString("yyyy.MM.dd_HH:mm:ss");
-    QString checksum = generateChecksum(x, y, color, timestamp);
-
-    QJsonObject move;
-    move["x"] = x;
-    move["y"] = y;
-    move["color"] = color;
-    move["timestamp"] = timestamp;
-    move["checksum"] = checksum;
-
-    // Запись хода в текстовый файл
-    saveGameToTextFile(move);
+    
+    // Генерация хеша для текущего хода
+    QString previousHash = (moveCounter == 1) ? "" : generateChecksum(x, y, color, timestamp, lastMoveHash);
+    QString currentHash = generateChecksum(x, y, color, timestamp, previousHash);
+    lastMoveHash = currentHash; // Сохраняем хеш текущего хода для следующего
+    
+    // Формируем данные для шифрования
+    QJsonObject moveData;
+    moveData["x"] = x;
+    moveData["y"] = y;
+    moveData["color"] = color;
+    moveData["timestamp"] = timestamp;
+    moveData["hash"] = currentHash;
+    
+    QByteArray dataToEncrypt;
+    QDataStream stream(&dataToEncrypt, QIODevice::WriteOnly);
+    stream << moveData["x"].toInt() << moveData["y"].toInt() << moveData["color"].toString()
+           << moveData["timestamp"].toString() << moveData["hash"].toString();
+    
+    QByteArray encryptedData;
+    CryptoUtils cryptoUtils;
+    int result = cryptoUtils.encrypt(dataToEncrypt, encryptedData, encryptionKey, iv);
+    
+    if (result == 0) {
+        qDebug() << "Данные успешно зашифрованы!";
+    } else {
+        QMessageBox::warning(this, "Ошибка", "Ошибка при шифровании данных.");
+        return;
+    }
+    
+    // Сохраняем зашифрованные данные
+    moveData["encryptedData"] = QString(encryptedData.toBase64());
+    saveGameToTextFile(moveData);
 }
 
-// Генерация контрольной суммы
-QString MainWindow::generateChecksum(int x, int y, const QString &color, const QString &timestamp) {
-    QByteArray data = QString("%1%2%3%4").arg(x).arg(y).arg(color).arg(timestamp).toUtf8();
+
+// Генерация контрольной суммы для хода
+QString MainWindow::generateChecksum(int x, int y, const QString &color, const QString &timestamp, const QString &previousHash) {
+    QByteArray data = QString("%1%2%3%4%5").arg(x).arg(y).arg(color).arg(timestamp).arg(previousHash).toUtf8();
     return QString(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
 }
 
-// Сохранение состояния в JSON
+
 void MainWindow::saveGameToTextFile(const QJsonObject &move) {
     QFile file("gameState.txt");
-
-    // Открываем файл для добавления данных в конец
+    
     if (!file.open(QIODevice::Append | QIODevice::Text)) {
         qWarning() << "Не удалось открыть файл для записи!";
         return;
     }
-
+    
     QTextStream out(&file);
-
-    // Извлекаем данные из объекта хода
-    int x = move["x"].toInt();
-    int y = move["y"].toInt();
-    QString color = move["color"].toString();
-    QString timestamp = move["timestamp"].toString();
-    QString checksum = move["checksum"].toString();
-
-    // Формат записи в файл: каждая строка — отдельное поле данных
-    out << "x: " << x << "\n";
-    out << "y: " << y << "\n";
-    out << "color: " << color << "\n";
-    out << "timestamp: " << timestamp << "\n";
-    out << "checksum: " << checksum << "\n";
-    out << "-----------------------\n";  // Разделитель между ходами
-
+    QString gameData = QString("x: %1, y: %2, color: %3, timestamp: %4, hash: %5, encryptedData: %6")
+                           .arg(move["x"].toInt())
+                           .arg(move["y"].toInt())
+                           .arg(move["color"].toString())
+                           .arg(move["timestamp"].toString())
+                           .arg(move["hash"].toString())
+                           .arg(move["encryptedData"].toString());
+    
+    out << gameData << "\n"; // Просто записываем в файл как строку
     file.close();
 }
 
 
-// Загрузка состояния из JSON
 void MainWindow::loadGameFromTxt() {
     QFile file("gameState.txt");
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         qWarning() << "Не удалось открыть файл для чтения!";
         return;
     }
-
+    
     QTextStream in(&file);
     QString line;
-    int moveIndex = 0;
-
+    
     while (!in.atEnd()) {
         line = in.readLine();
-        if (line.startsWith("x: ")) {
-            int x = line.mid(3).toInt();
-            line = in.readLine();
-            int y = line.mid(3).toInt();
-            line = in.readLine();
-            QString color = line.mid(7);
-            line = in.readLine();
-            QString timestamp = line.mid(11);
-            line = in.readLine();
-            QString checksum = line.mid(10);
-
-            // Валидация контрольной суммы
-            QString computedChecksum = generateChecksum(x, y, color, timestamp);
-            if (checksum != computedChecksum) {
-                QMessageBox::warning(this, "Ошибка контрольной суммы", QString("Ошибка в ходе %1").arg(++moveIndex));
-                continue;
-            }
-
-            // Найдем соответствующий чекбокс и обновим его состояние
-            QCheckBox *checkBox = findChild<QCheckBox*>(QString("checkbox_%1_%2").arg(x).arg(y));
-            if (checkBox) {
-                checkBox->setEnabled(false);
-                checkBox->setStyleSheet(QString("background-color: %1;").arg(color));
-                checkBox->setChecked(true);
-            }
+        QStringList dataParts = line.split(", ");
+        
+        // Извлекаем зашифрованные данные
+        QByteArray encryptedData = QByteArray::fromBase64(dataParts.last().split(": ")[1].toUtf8());
+        
+        QByteArray decryptedData;
+        CryptoUtils cryptoUtils;
+        int result = cryptoUtils.decrypt(encryptedData, decryptedData, encryptionKey, iv);
+        if (result != 0) {
+            QMessageBox::warning(this, "Ошибка", "Ошибка при расшифровке данных.");
+            return;
         }
-
-        // Пропускаем строку с разделителем
-        in.readLine();
+        
+        QDataStream stream(&decryptedData, QIODevice::ReadOnly);
+        int x, y;
+        QString color, timestamp, hash;
+        stream >> x >> y >> color >> timestamp >> hash;
+        
+        // Восстановление состояния чекбоксов
+        QCheckBox *checkBox = findChild<QCheckBox*>(QString("checkbox_%1_%2").arg(x).arg(y));
+        if (checkBox) {
+            checkBox->setEnabled(false);
+            checkBox->setStyleSheet(QString("background-color: %1;").arg(color));
+            checkBox->setChecked(true);
+        }
     }
-
+    
     file.close();
 }
 
-// Проверка контрольной суммы
-void MainWindow::validateChecksum(const QJsonObject &move, int moveIndex) {
-    int x = move["x"].toInt();
-    int y = move["y"].toInt();
-    QString color = move["color"].toString();
-    QString timestamp = move["timestamp"].toString();
-    QString savedChecksum = move["checksum"].toString();
 
-    QString computedChecksum = generateChecksum(x, y, color, timestamp);
-    if (savedChecksum != computedChecksum) {
-        QMessageBox::warning(this, "Ошибка контрольной суммы", QString("Ошибка в ходе %1").arg(moveIndex));
-    }
-}
-
-// Сброс игрового поля
 void MainWindow::resetGame() {
     // Сбрасываем состояние игрового поля
     for (int i = 0; i < 4; ++i) {
@@ -186,12 +190,12 @@ void MainWindow::resetGame() {
             }
         }
     }
-
+    
     // Перезаписываем состояние в файл (пустое состояние после сброса)
     QFile file("gameState.txt");
     if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         file.close();
     }
-
+    
     moveCounter = 0;  // Сброс счетчика ходов
 }
